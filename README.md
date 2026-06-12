@@ -13,7 +13,7 @@ You'll be developing an API for an online shopping cart in the Go programming la
 This is a REST API for basic CRUD operations for an online shopping cart. Data
 should be persisted in a storage layer which can use Postgres.
 
-You should use the default `net/http` package for REST implementation; `sqlx` or `sqlc` for interacting with Postgres;
+You should use the default `net/http` package for REST implementation; `sqlx` for interacting with Postgres;
 all the queries should be written manually (no ORM); your repo should be private.
 
 #### Additional requirements
@@ -22,13 +22,12 @@ all the queries should be written manually (no ORM); your repo should be private
 - Create a `Dockerfile` and `Docker compose` for your application.
 - For parsing your environment files use `viper`.
 - To apply migrations for Postgres use `goose` in your application.
+- For structured logging use `zap` (alternatively `slog` from the standard library).
 
 ### Domain Types
 
 The Cart API consists of two simple types: `Cart` and `CartItem`. The `Cart`  
 holds zero or more `CartItem` objects.
-
-`CartItem` objects should be created in DB exactly (not from application).
 
 - The maximum number of distinct products in one cart is **5**.
 
@@ -37,7 +36,7 @@ holds zero or more `CartItem` objects.
 A new cart should be created and an ID generated. The new empty cart should be returned.
 
 ```sh
-POST http://localhost:3000/carts -d '{}'
+POST http://localhost:3000/api/v1/carts -d '{}'
 ```
 
 ```json
@@ -61,7 +60,7 @@ Should fail if:
   - The cart already contains 5 products.
 
 ```sh
-POST http://localhost:3000/carts/1/items -d '{
+POST http://localhost:3000/api/v1/carts/1/items -d '{
   "product": "Shoes",
   "price": 2500.50
 }'
@@ -82,13 +81,39 @@ An existing item should be removed from a cart. Should fail if the cart does not
 exist or if the item does not exist.
 
 ```sh
-DELETE http://localhost:3000/carts/1/items/1
+DELETE http://localhost:3000/api/v1/carts/1/items/1
+```
+
+```
+204 No Content
+```
+
+### Update Cart Item
+
+An existing cart item should be able to be updated. Should fail if the
+cart or cart item does not exist. The item should be returned.
+
+Should fail if:
+  - The cart does not exist.
+  - The product does not exist.
+  - The product name is blank.
+  - The price is non-positive.
+
+```sh
+PUT http://localhost:3000/api/v1/carts/1/items/1 -d '{
+  "product": "Shoes",
+  "price": 5000.50
+}'
 ```
 
 ```json
-{}
+{
+  "id": 1,
+  "cart_id": 1,
+  "product": "Shoes",
+  "price": 5000.50
+}
 ```
-
 
 ### View Cart
 
@@ -96,7 +121,7 @@ An existing cart should be able to be viewed with its items. Should fail if the
 cart does not exist.
 
 ```sh
-GET http://localhost:3000/carts/1
+GET http://localhost:3000/api/v1/carts/1
 ```
 
 ```json
@@ -132,7 +157,7 @@ Discount rules:
 Example request:
 
 ```sh
-GET http://localhost:3000/carts/1/price
+GET http://localhost:3000/api/v1/carts/1/price
 ```
 
 Example response:
@@ -169,10 +194,13 @@ cart_api/
 │   ├── entity/                   # Domain entities and DTOs
 │   │   ├── cart.go               # Cart domain entity
 │   │   ├── cart_item.go          # CartItem domain entity
-│   │   └── add_cart_item.go      # DTO for adding items to cart
+│   │   ├── add_cart_item.go      # DTO for adding items to cart 
+│   │   ├── update_cart_item.go   # DTO for updating cart items
+│   │   └── error_response.go     # DTO for error responses
 │   │
-│   ├── errorsx/                  # Custom application errors
-│   │   └── repository_errors.go  # Sentinel errors (ErrCartNotFound, etc.)
+│   ├── errors/                   # Custom application errors
+│   │   ├── repository_errors.go  # Sentinel errors (ErrCartNotFound, etc.)
+│   │   └── service_errors.go     # Service errors (ErrCartFull, etc.)
 │   │
 │   ├── handlers/                 # HTTP handlers layer (Controllers)
 │   │   │                         # Each business function = separate file
@@ -180,7 +208,10 @@ cart_api/
 │   │   ├── create_cart.go        # POST   /api/v1/carts
 │   │   ├── view_cart.go          # GET    /api/v1/carts/{id}
 │   │   ├── add_to_cart.go        # POST   /api/v1/carts/{id}/items
+│   │   ├── update_cart_item.go   # PUT    /api/v1/carts/{id}/items/{item_id}
+│   │   ├── calculate_price.go    # GET   /api/v1/carts/{id}/price
 │   │   ├── remove_from_cart.go   # DELETE /api/v1/carts/{id}/items/{item_id}
+│   │   ├── cart_service.go       # Service interface definition
 │   │   └── helpers.go            # HTTPErrorResponse and utilities
 │   │
 │   ├── repository/               # Data access layer
@@ -189,20 +220,22 @@ cart_api/
 │   │   ├── create_cart.go        # AddCart() - insert cart
 │   │   ├── view_cart.go          # GetCart() - select cart with items
 │   │   ├── add_to_cart.go        # AddCartItem() - insert cart item
+│   │   ├── update_cart_item.go   # UpdateCartItem() - update cart item
 │   │   ├── remove_from_cart.go   # RemoveCartItem() - delete cart item
 │   │   └── repository_test.go    # All repository tests
 │   │
 │   └── service/                  # Business logic layer
 │       │                         # Each business function = separate file
 │       ├── service.go            # Service struct and constructor
-│       ├── repositorier.go       # Repository interface abstraction
-│       ├── servicer.go           # Service interface for testing
+│       ├── repository.go         # Repository interface abstraction
 │       ├── create_cart.go        # CreateCart() - business logic
 │       ├── view_cart.go          # ViewCart() - business logic
 │       ├── add_to_cart.go        # AddCartItemToCart() - business logic
+│       ├── update_cart_item.go   # UpdateCartItem() - business logic
+│       ├── calculate_price.go    # CalculatePrice() - business logic
 │       ├── remove_from_cart.go   # RemoveCartItemFromCart() - business logic
 │       ├── service_test.go       # All service tests
-│       └── mock_repositorier_test.go  # Mock repository for testing
+│       └── mock_repository_test.go  # Mock repository for testing
 │
 ├── docker-compose.yaml           # Docker Compose configuration
 ├── Dockerfile                    # Application container definition
@@ -221,7 +254,7 @@ cart_api/
 - Create repository, service, and handlers (Dependency Injection)
 - Start HTTP server
 - Handle critical initialization errors with `log.Fatalf()`
-- Gracefull shutdown
+- Graceful shutdown
 
 **Key Rules**:
 - Simple and readable `main()` function
@@ -277,11 +310,11 @@ cart_api/
 
 ---
 
-### **internal/entity/** - Domain Entities and DTOs
-**Purpose**: Define domain models and data transfer objects  
+### **internal/entity/** - Domain Entities
+**Purpose**: Define domain models and DTOs
 **Responsibilities**:
 - Domain entities (Cart, CartItem) - core business objects
-- Request DTOs (AddItemRequest) - incoming data structures
+- Request DTOs (AddItemRequest, UpdateItemRequest) - incoming data structures
 - Response DTOs (ErrorResponse) - outgoing data structures
 - JSON and database mapping
 
@@ -294,7 +327,7 @@ cart_api/
 
 ---
 
-### **internal/errorsx/** - Custom Errors
+### **internal/errors/** - Custom Errors
 **Purpose**: Application-specific typed errors  
 **Responsibilities**:
 - Define sentinel errors using `errors.New()`
@@ -325,7 +358,7 @@ cart_api/
 
 **Key Rules**:
 - **Each business function in a separate file** (create_cart.go, view_cart.go, etc.)
-- Validation MUST be at handler level, NOT in service
+- Input validation MUST be at handler level, NOT in service
 - Context with timeout before calling service
 - Use typed error checking with `errors.Is()`
 - Distinguish error types (404 vs 500)
@@ -340,7 +373,7 @@ cart_api/
 - Execute SQL queries using `sqlx`
 - Map database rows to domain entities
 - Handle database-specific errors
-- Return typed errors from `errorsx`
+- Return typed errors from `errors`
 - Provide CRUD operations
 
 **Key Rules**:
@@ -351,7 +384,7 @@ cart_api/
 - Check `RowsAffected()` for DELETE/UPDATE
 - Use LEFT JOIN for optional relations
 - Use COALESCE for NULL handling
-- Return predefined errors from errorsx
+- Return predefined errors from `errors`
 
 ---
 
@@ -359,17 +392,17 @@ cart_api/
 **Purpose**: Application business logic and orchestration  
 **Responsibilities**:
 - **Each business function in a separate file** (create_cart.go, view_cart.go, etc.)
+- Validate business constraints
 - Implement business rules and workflows
 - Coordinate repository calls
-- Validate business constraints
 - Log all errors with descriptive messages
 - Return domain entities
 
 **Key Rules**:
-- Use `Repositorier` interface for repository dependency
-- Define `Servicer` interface for testing
+- Use `Repository` interface for repository dependency
+- Define `Service` interface for testing
 - Context as first parameter in all methods
-- Log errors before returning them
+- Log errors before returning them using the injected `*zap.Logger`
 - Use dependency injection through constructor
 - No technical details (SQL, HTTP) in this layer
 - Business-oriented method names
@@ -413,7 +446,7 @@ PostgreSQL Database
 
 ## Testing Strategy
 
-- **Repository Tests**: Test database operations with sql.Mock
+- **Repository Tests**: Test database operations with [sqlmock](https://github.com/DATA-DOG/go-sqlmock)
 - **Service Tests**: Test business logic with mocked repository (unit tests)
 - **Handler Tests**: Test HTTP handling with mocked service (unit tests)
 - Use `mockery` for generating interface mocks
@@ -429,6 +462,6 @@ PostgreSQL Database
 - **DB Library**: sqlx (SQL extensions for Go)
 - **Migrations**: goose with embedded SQL files
 - **Configuration**: viper with YAML
-- **Testing**: Native `testing` package + mockery
+- **Logging**: zap (structured, leveled logging)
+- **Testing**: Native `testing` package (optionally `testify`) + mockery
 - **Containerization**: Docker + Docker Compose
-
